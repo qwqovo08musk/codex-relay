@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Codex API 中转服务">
+  <title>Codex Relay</title>
+
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
+        Roboto, Helvetica, Arial, sans-serif;
+      background: #0b0d10;
+      color: #f5f5f5;
+      min-height: 100vh;
+    }
+
+    .container {
+      width: 92%;
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+
+    header {
+      padding: 28px 0;
+      border-bottom: 1px solid #22262c;
+    }
+
+    .nav {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .logo {
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+    }
+
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      color: #a5abb3;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #36d399;
+      box-shadow: 0 0 10px rgba(54, 211, 153, 0.6);
+    }
+
+    .hero {
+      padding: 90px 0 60px;
+      text-align: center;
+    }
+
+    .hero h1 {
+      font-size: clamp(42px, 8vw, 76px);
+      line-height: 1;
+      letter-spacing: -3px;
+      margin-bottom: 25px;
+    }
+
+    .hero p {
+      max-width: 650px;
+      margin: 0 auto;
+      color: #9ba1aa;
+      font-size: 18px;
+      line-height: 1.7;
+    }
+
+    .panel {
+      margin: 30px auto 80px;
+      max-width: 850px;
+      background: #111419;
+      border: 1px solid #242930;
+      border-radius: 18px;
+      padding: 30px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+    }
+
+    .panel-title {
+      font-size: 20px;
+      font-weight: 650;
+      margin-bottom: 8px;
+    }
+
+    .panel-subtitle {
+      color: #858c96;
+      font-size: 14px;
+      margin-bottom: 28px;
+    }
+
+    .form-group {
+      margin-bottom: 20px;
+    }
+
+    label {
+      display: block;
+      font-size: 14px;
+      color: #cdd1d7;
+      margin-bottom: 9px;
+    }
+
+    input,
+    select {
+      width: 100%;
+      padding: 14px 15px;
+      border: 1px solid #2a3038;
+      border-radius: 10px;
+      background: #0b0d10;
+      color: #fff;
+      font-size: 15px;
+      outline: none;
+    }
+
+    input:focus,
+    select:focus {
+      border-color: #555d68;
+    }
+
+    .button {
+      width: 100%;
+      padding: 15px;
+      border: none;
+      border-radius: 10px;
+      background: #f5f5f5;
+      color: #080a0c;
+      font-size: 15px;
+      font-weight: 650;
+      cursor: pointer;
+      transition: 0.2s;
+    }
+
+    .button:hover {
+      opacity: 0.88;
+    }
+
+    .button:active {
+      transform: scale(0.99);
+    }
+
+    .message {
+      margin-top: 18px;
+      padding: 14px;
+      border-radius: 10px;
+      background: #181c22;
+      color: #9299a3;
+      font-size: 13px;
+      line-height: 1.6;
+      display: none;
+    }
+
+    .features {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+      margin-bottom: 80px;
+    }
+
+    .feature {
+      padding: 25px;
+      border: 1px solid #242930;
+      border-radius: 14px;
+      background: #111419;
+    }
+
+    .feature h3 {
+      margin-bottom: 10px;
+      font-size: 16px;
+    }
+
+    .feature p {
+      color: #858c96;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    footer {
+      padding: 30px 0 50px;
+      border-top: 1px solid #22262c;
+      color: #666d77;
+      font-size: 13px;
+      text-align: center;
+    }
+
+    @media (max-width: 700px) {
+      .hero {
+        padding: 65px 0 40px;
+      }
+
+      .hero h1 {
+        letter-spacing: -2px;
+      }
+
+      .hero p {
+        font-size: 16px;
+      }
+
+      .panel {
+        padding: 22px;
+      }
+
+      .features {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+
+<body>
+
+  <header>
+    <div class="container nav">
+      <div class="logo">Codex Relay</div>
+
+      <div class="status">
+        <span class="dot"></span>
+        Service Online
+      </div>
+    </div>
+  </header>
+
+  <main class="container">
+
+    <section class="hero">
+      <h1>Codex Relay</h1>
+
+      <p>
+        A simple API relay interface for connecting your applications
+        to Codex-compatible services.
+      </p>
+    </section>
+
+    <section class="panel">
+
+      <div class="panel-title">
+        API Configuration
+      </div>
+
+      <div class="panel-subtitle">
+        Configure your endpoint and test the connection.
+      </div>
+
+      <div class="form-group">
+        <label for="endpoint">
+          API Endpoint
+        </label>
+
+        <input
+          id="endpoint"
+          type="text"
+          placeholder="https://your-domain.com/v1"
+        >
+      </div>
+
+      <div class="form-group">
+        <label for="model">
+          Model
+        </label>
+
+        <select id="model">
+          <option value="codex">Codex</option>
+          <option value="gpt-5">GPT-5</option>
+          <option value="custom">Custom Model</option>
+        </select>
+      </div>
+
+      <button class="button" onclick="testConnection()">
+        Test Connection
+      </button>
+
+      <div id="message" class="message"></div>
+
+    </section>
+
+    <section class="features">
+
+      <div class="feature">
+        <h3>Fast</h3>
+        <p>
+          Lightweight interface designed for quick API configuration
+          and testing.
+        </p>
+      </div>
+
+      <div class="feature">
+        <h3>Flexible</h3>
+        <p>
+          Supports custom API endpoints and different model
+          configurations.
+        </p>
+      </div>
+
+      <div class="feature">
+        <h3>Secure by Design</h3>
+        <p>
+          API credentials should be handled by a secure backend rather
+          than exposed in frontend code.
+        </p>
+      </div>
+
+    </section>
+
+  </main>
+
+  <footer>
+    © 2026 Codex Relay. All rights reserved.
+  </footer>
+
+  <script>
+    function testConnection() {
+      const endpoint = document.getElementById("endpoint").value.trim();
+      const model = document.getElementById("model").value;
+      const message = document.getElementById("message");
+
+      message.style.display = "block";
+
+      if (!endpoint) {
+        message.textContent =
+          "Please enter an API endpoint first.";
+        return;
+      }
+
+      message.textContent =
+        "Configuration saved locally for this demo. " +
+        "Backend API connection will be added in the next step. " +
+        "Selected model: " + model;
+    }
+  </script>
+
+</body>
+</html>
