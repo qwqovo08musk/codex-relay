@@ -4,7 +4,6 @@ const app = express();
 
 app.use(express.json());
 
-// Allow requests from the GitHub Pages frontend
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
   res.header("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
@@ -23,6 +22,22 @@ app.get("/", (req, res) => {
   res.json({
     status: "ok",
     message: "Codex Relay API is running"
+  });
+});
+
+app.post("/v1/chat/completions", async (req, res) => {
+  res.json({
+    id: "test-relay",
+    object: "chat.completion",
+    choices: [
+      {
+        index: 0,
+        message: {
+          role: "assistant",
+          content: "API relay test successful."
+        }
+      }
+    ]
   });
 });
 
