@@ -7,120 +7,26 @@
 
 <style>
 *{box-sizing:border-box}
-
-body{
-  margin:0;
-  font-family:Arial,sans-serif;
-  background:#f5f5f5;
-  color:#111;
-}
-
-.app{
-  max-width:1000px;
-  margin:auto;
-  min-height:100vh;
-  background:#fff;
-}
-
-header{
-  padding:20px;
-  border-bottom:1px solid #ddd;
-  font-size:22px;
-  font-weight:bold;
-}
-
-nav{
-  display:flex;
-  border-bottom:1px solid #ddd;
-}
-
-nav button{
-  flex:1;
-  padding:15px;
-  border:0;
-  background:white;
-  color:#111;
-}
-
-nav button.active{
-  background:#111;
-  color:white;
-}
-
-section{
-  padding:20px;
-}
-
-.hidden{
-  display:none;
-}
-
-.card{
-  border:1px solid #ddd;
-  border-radius:12px;
-  padding:18px;
-  margin-bottom:15px;
-}
-
-input,textarea{
-  width:100%;
-  padding:12px;
-  border:1px solid #ccc;
-  border-radius:8px;
-  margin:7px 0 12px;
-  font-size:15px;
-}
-
-button{
-  padding:11px 16px;
-  border:0;
-  border-radius:8px;
-  background:#111;
-  color:white;
-  cursor:pointer;
-}
-
-.chatbox{
-  min-height:400px;
-}
-
-.message{
-  padding:12px 15px;
-  margin:10px 0;
-  border-radius:10px;
-  white-space:pre-wrap;
-}
-
-.user{
-  background:#eee;
-  margin-left:15%;
-}
-
-.assistant{
-  background:#f7f7f7;
-  margin-right:15%;
-}
-
-.row{
-  display:flex;
-  gap:10px;
-}
-
-.row textarea{
-  flex:1;
-}
-
-.row button{
-  width:100px;
-}
-
-.key{
-  font-family:monospace;
-  background:#f3f3f3;
-  padding:10px;
-  border-radius:8px;
-  word-break:break-all;
-}
+body{margin:0;font-family:Arial,sans-serif;background:#f5f5f5;color:#111}
+.app{max-width:1000px;margin:auto;min-height:100vh;background:#fff}
+header{padding:20px;border-bottom:1px solid #ddd;font-size:22px;font-weight:bold}
+nav{display:flex;border-bottom:1px solid #ddd}
+nav button{flex:1;padding:15px;border:0;background:white;color:#111}
+nav button.active{background:#111;color:white}
+section{padding:20px}
+.hidden{display:none}
+.card{border:1px solid #ddd;border-radius:12px;padding:18px;margin-bottom:15px}
+input,textarea{width:100%;padding:12px;border:1px solid #ccc;border-radius:8px;margin:7px 0 12px;font-size:15px}
+button{padding:11px 16px;border:0;border-radius:8px;background:#111;color:white;cursor:pointer}
+.chatbox{min-height:400px}
+.message{padding:12px 15px;margin:10px 0;border-radius:10px;white-space:pre-wrap}
+.user{background:#eee;margin-left:15%}
+.assistant{background:#f7f7f7;margin-right:15%}
+.row{display:flex;gap:10px}
+.row textarea{flex:1}
+.row button{width:100px}
+.key{font-family:monospace;background:#f3f3f3;padding:10px;border-radius:8px;word-break:break-all}
+.result{margin-top:12px;padding:10px;background:#f5f5f5;border-radius:8px;white-space:pre-wrap}
 </style>
 </head>
 
@@ -131,14 +37,20 @@ button{
 <header>Codex Relay</header>
 
 <nav>
-<button id="chatTab" class="active" onclick="showPage('chat')">
+
+<button id="chatTab"
+class="active"
+onclick="showPage('chat')">
 Chat
 </button>
 
-<button id="adminTab" onclick="showPage('admin')">
+<button id="adminTab"
+onclick="showPage('admin')">
 Admin
 </button>
+
 </nav>
+
 
 <section id="chat">
 
@@ -154,6 +66,7 @@ autocomplete="off"
 
 </div>
 
+
 <div id="chatbox" class="chatbox">
 
 <div class="message assistant">
@@ -161,6 +74,7 @@ Hello! Ask me anything.
 </div>
 
 </div>
+
 
 <div class="row">
 
@@ -180,19 +94,66 @@ Send
 
 <section id="admin" class="hidden">
 
+
 <div class="card">
 
-<h2>Create API Key</h2>
+<h2>Admin Login</h2>
 
-<p>Create a new customer API key.</p>
+<input
+id="adminSecret"
+type="password"
+placeholder="Admin password"
+>
+
+</div>
+
+
+<div class="card">
+
+<h2>Create Customer Key</h2>
 
 <button onclick="createKey()">
 Create Key
 </button>
 
-<div id="newKey"></div>
+<div id="newKey"
+class="result">
+</div>
 
 </div>
+
+
+<div class="card">
+
+<h2>Add Balance</h2>
+
+<input
+id="customerKey"
+placeholder="cr_..."
+>
+
+<input
+id="amount"
+type="number"
+step="0.01"
+placeholder="RM amount"
+>
+
+<input
+id="note"
+placeholder="Note"
+>
+
+<button onclick="addBalance()">
+Add Balance
+</button>
+
+<div id="balanceResult"
+class="result">
+</div>
+
+</div>
+
 
 </section>
 
@@ -201,61 +162,93 @@ Create Key
 
 <script>
 
-const API = "https://codex-relay.onrender.com";
+const API =
+"https://codex-relay.onrender.com";
 
 
 function showPage(page){
 
-document.getElementById("chat").classList.toggle(
-"hidden",
-page !== "chat"
-);
+document
+.getElementById("chat")
+.classList
+.toggle("hidden", page !== "chat");
 
-document.getElementById("admin").classList.toggle(
-"hidden",
-page !== "admin"
-);
+document
+.getElementById("admin")
+.classList
+.toggle("hidden", page !== "admin");
 
-document.getElementById("chatTab").classList.toggle(
-"active",
-page === "chat"
-);
+document
+.getElementById("chatTab")
+.classList
+.toggle("active", page === "chat");
 
-document.getElementById("adminTab").classList.toggle(
-"active",
-page === "admin"
-);
+document
+.getElementById("adminTab")
+.classList
+.toggle("active", page === "admin");
 
 }
 
+
+/*
+Create customer API key
+*/
 
 async function createKey(){
 
-const result = document.getElementById("newKey");
+const secret =
+document
+.getElementById("adminSecret")
+.value
+.trim();
 
-result.textContent = "Creating...";
+const result =
+document
+.getElementById("newKey");
+
+if(!secret){
+
+result.textContent =
+"Enter admin password.";
+
+return;
+
+}
+
+result.textContent =
+"Creating...";
+
 
 try{
 
-const response = await fetch(
+const response =
+await fetch(
 API + "/admin/create-key",
 {
-method:"POST"
+method:"POST",
+
+headers:{
+"X-Admin-Secret":
+secret
+}
 }
 );
 
-const data = await response.json();
+const data =
+await response.json();
 
 if(!response.ok){
 
 throw new Error(
-data?.error?.message || "Failed to create key"
+data?.error?.message ||
+"Failed"
 );
 
 }
 
 result.innerHTML =
-"<p>New API Key:</p>" +
+"<b>Customer API Key:</b><br><br>" +
 "<div class='key'>" +
 data.api_key +
 "</div>";
@@ -263,20 +256,147 @@ data.api_key +
 }catch(error){
 
 result.textContent =
-"Error: " + error.message;
+"Error: " +
+error.message;
 
 }
 
 }
 
+
+/*
+Add customer balance
+*/
+
+async function addBalance(){
+
+const secret =
+document
+.getElementById("adminSecret")
+.value
+.trim();
+
+const key =
+document
+.getElementById("customerKey")
+.value
+.trim();
+
+const amount =
+Number(
+document
+.getElementById("amount")
+.value
+);
+
+const note =
+document
+.getElementById("note")
+.value
+.trim();
+
+const result =
+document
+.getElementById("balanceResult");
+
+
+if(!secret){
+
+result.textContent =
+"Enter admin password.";
+
+return;
+
+}
+
+if(!key){
+
+result.textContent =
+"Enter customer API key.";
+
+return;
+
+}
+
+if(!Number.isFinite(amount) || amount <= 0){
+
+result.textContent =
+"Enter a valid amount.";
+
+return;
+
+}
+
+result.textContent =
+"Adding balance...";
+
+
+try{
+
+const response =
+await fetch(
+API + "/admin/add-balance",
+{
+method:"POST",
+
+headers:{
+"Content-Type":
+"application/json",
+
+"X-Admin-Secret":
+secret
+},
+
+body:
+JSON.stringify({
+api_key:key,
+amount:amount,
+note:note
+})
+}
+);
+
+const data =
+await response.json();
+
+if(!response.ok){
+
+throw new Error(
+data?.error?.message ||
+"Failed"
+);
+
+}
+
+result.textContent =
+"Success. Balance: RM " +
+Number(data.balance)
+.toFixed(2);
+
+}catch(error){
+
+result.textContent =
+"Error: " +
+error.message;
+
+}
+
+}
+
+
+/*
+Chat
+*/
 
 async function sendMessage(){
 
 const input =
-document.getElementById("message");
+document
+.getElementById("message");
 
 const keyInput =
-document.getElementById("apiKey");
+document
+.getElementById("apiKey");
 
 const text =
 input.value.trim();
@@ -292,7 +412,9 @@ return;
 
 if(!key){
 
-alert("Please enter your API Key.");
+alert(
+"Please enter your API Key."
+);
 
 return;
 
@@ -301,7 +423,8 @@ return;
 input.value = "";
 
 const box =
-document.getElementById("chatbox");
+document
+.getElementById("chatbox");
 
 
 const user =
@@ -330,18 +453,25 @@ box.appendChild(thinking);
 
 try{
 
-const response = await fetch(
-API + "/v1/chat/completions",
+const response =
+await fetch(
+API +
+"/v1/chat/completions",
 {
 method:"POST",
 
 headers:{
-"Content-Type":"application/json",
-"Authorization":"Bearer " + key
+"Content-Type":
+"application/json",
+
+"Authorization":
+"Bearer " + key
 },
 
-body:JSON.stringify({
-model:"qwen3.5-27b",
+body:
+JSON.stringify({
+model:
+"qwen3.5-27b",
 
 messages:[
 {
@@ -368,20 +498,17 @@ data?.error?.message ||
 }
 
 
-const answer =
-data?.choices?.[0]?.message?.content;
-
-
 thinking.textContent =
-answer || "No response.";
+data?.choices?.[0]
+?.message?.content ||
+"No response.";
 
 
 }catch(error){
 
-console.error(error);
-
 thinking.textContent =
-"Error: " + error.message;
+"Error: " +
+error.message;
 
 }
 
