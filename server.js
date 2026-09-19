@@ -7,15 +7,18 @@ const app = express();
 app.use(express.json({ limit: "2mb" }));
 
 app.use((req, res, next) => {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.setHeader(
+  res.header("Access-Control-Allow-Origin", "*");
+  res.header(
     "Access-Control-Allow-Headers",
     "Content-Type, Authorization, X-Admin-Secret"
   );
+  res.header(
+    "Access-Control-Allow-Methods",
+    "GET, POST, OPTIONS"
+  );
 
   if (req.method === "OPTIONS") {
-    return res.status(204).end();
+    return res.sendStatus(204);
   }
 
   next();
@@ -28,70 +31,83 @@ const ADMIN_SECRET = process.env.ADMIN_SECRET;
 
 const pool = new Pool({
   connectionString: DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
+  ssl: {
+    rejectUnauthorized: false
+  }
 });
+
+/*
+  Customer pricing in RM
+
+  Customer price:
+  Input  = RM 0.02 / 1K tokens
+  Output = RM 0.15 / 1K tokens
+*/
 
 const INPUT_PRICE_PER_1K = 0.02;
 const OUTPUT_PRICE_PER_1K = 0.15;
 
-const MAX_OUTPUT_TOKENS = 8192;
 const MAX_INPUT_CHARS = 500000;
+const MAX_OUTPUT_TOKENS = 8192;
 
 function calculateCost(inputTokens, outputTokens) {
   const inputCost =
-    (inputTokens / 1000) * INPUT_PRICE_PER_1K;
+    (Number(inputTokens || 0) / 1000) * INPUT_PRICE_PER_1K;
 
   const outputCost =
-    (outputTokens / 1000) * OUTPUT_PRICE_PER_1K;
+    (Number(outputTokens || 0) / 1000) * OUTPUT_PRICE_PER_1K;
 
-  return Number(
-    (inputCost + outputCost).toFixed(6)
-  );
+  return Number((inputCost + outputCost).toFixed(6));
 }
 
 function estimateInputTokens(messages) {
-  let characters = 0;
+  let chars = 0;
 
-  for (const message of messages) {
-    if (!message) continue;
-
+  for (const message of messages || []) {
     if (typeof message.content === "string") {
-      characters += message.content.length;
-    } else if (Array.isArray(message.content)) {
-      for (const item of message.content) {
-        if (typeof item === "string") {
-          characters += item.length;
-        } else if (
-          item &&
-          typeof item.text === "string"
-        ) {
-          characters += item.text.length;
-        }
-      }
+      chars += message.content.length;
+    } else {
+      chars += JSON.stringify(message.content || "").length;
     }
   }
 
-  return Math.ceil(characters / 2);
+  // Conservative estimate for Chinese / English mixed text
+  return Math.ceil(chars / 2);
 }
 
-function getApiKey(req) {
+function generateCustomerKey() {
+  return (
+    "cr_" +
+    crypto.randomBytes(24).toString("hex")
+  );
+}
+
+function getCustomerKey(req) {
   const auth = req.headers.authorization || "";
 
-  if (!auth.startsWith("Bearer ")) {
-    return null;
+  if (auth.startsWith("Bearer ")) {
+    return auth.slice(7).trim();
   }
 
-  return auth.slice(7).trim();
+  if (req.body && req.body.api_key) {
+    return String(req.body.api_key).trim();
+  }
+
+  return "";
 }
 
 function checkAdmin(req) {
   const secret = req.headers["x-admin-secret"];
 
   return (
-    ADMIN_SECRET &&
+    typeof secret === "string" &&
     secret === ADMIN_SECRET
   );
 }
+
+/* =========================
+   Health check
+========================= */
 
 app.get("/", (req, res) => {
   res.json({
@@ -99,6 +115,10 @@ app.get("/", (req, res) => {
     message: "Codex Relay API is running"
   });
 });
+
+/* =========================
+   Create customer API key
+========================= */
 
 app.post("/admin/create-key", async (req, res) => {
   try {
@@ -110,32 +130,43 @@ app.post("/admin/create-key", async (req, res) => {
       });
     }
 
-    const apiKey =
-      "cr_" +
-      crypto.randomBytes(24).toString("hex");
+    const key = generateCustomerKey();
 
-    await pool.query(
-      `INSERT INTO api_keys
-       ("key", balance, total_tokens, active)
-       VALUES ($1, $2, $3, $4)`,
-      [apiKey, 0, 0, true]
+    const result = await pool.query(
+      `
+      INSERT INTO api_keys
+        ("key", balance, total_tokens, active)
+      VALUES
+        ($1, 0, 0, true)
+      RETURNING
+        "key",
+        balance,
+        total_tokens,
+        active,
+        created_at
+      `,
+      [key]
     );
 
     res.json({
       success: true,
-      api_key: apiKey
+      key: result.rows[0]
     });
-
   } catch (error) {
-    console.error(error);
+    console.error("create-key error:", error);
 
     res.status(500).json({
       error: {
-        message: "Failed to create API key"
+        message: "Failed to create API key",
+        details: error.message
       }
     });
   }
 });
+
+/* =========================
+   Add customer balance
+========================= */
 
 app.post("/admin/add-balance", async (req, res) => {
   try {
@@ -147,23 +178,24 @@ app.post("/admin/add-balance", async (req, res) => {
       });
     }
 
-    const {
-      api_key,
-      amount,
-      note
-    } = req.body;
+    const apiKey = String(req.body.api_key || "").trim();
+    const amount = Number(req.body.amount || 0);
+    const note = req.body.note
+      ? String(req.body.note)
+      : null;
 
-    const addAmount = Number(amount);
-
-    if (
-      !api_key ||
-      !Number.isFinite(addAmount) ||
-      addAmount <= 0
-    ) {
+    if (!apiKey) {
       return res.status(400).json({
         error: {
-          message:
-            "Invalid API key or amount"
+          message: "api_key is required"
+        }
+      });
+    }
+
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return res.status(400).json({
+        error: {
+          message: "amount must be greater than 0"
         }
       });
     }
@@ -173,84 +205,94 @@ app.post("/admin/add-balance", async (req, res) => {
     try {
       await client.query("BEGIN");
 
-      const result = await client.query(
-        `UPDATE api_keys
-         SET balance = balance + $1,
-             updated_at = now()
-         WHERE "key" = $2
-         RETURNING balance`,
-        [addAmount, api_key]
+      const update = await client.query(
+        `
+        UPDATE api_keys
+        SET
+          balance = balance + $2,
+          updated_at = now()
+        WHERE
+          "key" = $1
+          AND active = true
+        RETURNING
+          balance
+        `,
+        [apiKey, amount]
       );
 
-      if (result.rows.length === 0) {
+      if (update.rowCount === 0) {
         await client.query("ROLLBACK");
 
         return res.status(404).json({
           error: {
-            message: "API key not found"
+            message: "Customer API key not found or disabled"
           }
         });
       }
 
       await client.query(
-        `INSERT INTO balance_transactions
-         (api_key, amount, type, note)
-         VALUES ($1, $2, $3, $4)`,
-        [
-          api_key,
-          addAmount,
-          "topup",
-          note || "Admin top-up"
-        ]
+        `
+        INSERT INTO balance_transactions
+          (api_key, amount, type, note)
+        VALUES
+          ($1, $2, 'topup', $3)
+        `,
+        [apiKey, amount, note]
       );
 
       await client.query("COMMIT");
 
       res.json({
         success: true,
-        balance:
-          Number(result.rows[0].balance)
+        balance: Number(update.rows[0].balance)
       });
-
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
-
     } finally {
       client.release();
     }
-
   } catch (error) {
-    console.error(error);
+    console.error("add-balance error:", error);
 
     res.status(500).json({
       error: {
-        message: "Failed to add balance"
+        message: "Failed to add balance",
+        details: error.message
       }
     });
   }
 });
 
+/* =========================
+   Check customer balance
+========================= */
+
 app.get("/v1/balance", async (req, res) => {
   try {
-    const apiKey = getApiKey(req);
+    const apiKey = getCustomerKey(req);
 
     if (!apiKey) {
       return res.status(401).json({
         error: {
-          message: "Missing API key"
+          message: "API key is required"
         }
       });
     }
 
     const result = await pool.query(
-      `SELECT balance, active
-       FROM api_keys
-       WHERE "key" = $1`,
+      `
+      SELECT
+        balance,
+        total_tokens,
+        active
+      FROM api_keys
+      WHERE "key" = $1
+      `,
       [apiKey]
     );
 
-    if (result.rows.length === 0) {
+    if (result.rowCount === 0) {
       return res.status(401).json({
         error: {
           message: "Invalid API key"
@@ -258,23 +300,36 @@ app.get("/v1/balance", async (req, res) => {
       });
     }
 
-    res.json({
-      balance:
-        Number(result.rows[0].balance),
-      active:
-        result.rows[0].active
-    });
+    const customer = result.rows[0];
 
+    if (!customer.active) {
+      return res.status(403).json({
+        error: {
+          message: "API key is disabled"
+        }
+      });
+    }
+
+    res.json({
+      balance: Number(customer.balance),
+      total_tokens: Number(customer.total_tokens || 0),
+      active: customer.active
+    });
   } catch (error) {
-    console.error(error);
+    console.error("balance error:", error);
 
     res.status(500).json({
       error: {
-        message: "Failed to get balance"
+        message: "Failed to get balance",
+        details: error.message
       }
     });
   }
 });
+
+/* =========================
+   Disable customer key
+========================= */
 
 app.post("/admin/disable-key", async (req, res) => {
   try {
@@ -286,490 +341,307 @@ app.post("/admin/disable-key", async (req, res) => {
       });
     }
 
-    const { api_key } = req.body;
+    const apiKey = String(req.body.api_key || "").trim();
 
-    if (!api_key) {
+    if (!apiKey) {
       return res.status(400).json({
         error: {
-          message: "API key is required"
+          message: "api_key is required"
         }
       });
     }
 
     const result = await pool.query(
-      `UPDATE api_keys
-       SET active = false,
-           updated_at = now()
-       WHERE "key" = $1
-       RETURNING "key"`,
-      [api_key]
+      `
+      UPDATE api_keys
+      SET
+        active = false,
+        updated_at = now()
+      WHERE "key" = $1
+      RETURNING
+        "key",
+        active
+      `,
+      [apiKey]
     );
 
-    if (result.rows.length === 0) {
+    if (result.rowCount === 0) {
       return res.status(404).json({
         error: {
-          message: "API key not found"
+          message: "Customer API key not found"
         }
       });
     }
 
     res.json({
       success: true,
-      message: "API key disabled"
+      key: result.rows[0]
     });
-
   } catch (error) {
-    console.error(error);
+    console.error("disable-key error:", error);
 
     res.status(500).json({
       error: {
-        message: "Failed to disable key"
+        message: "Failed to disable API key",
+        details: error.message
       }
     });
   }
 });
 
+/* =========================
+   Chat completions
+========================= */
+
 app.post("/v1/chat/completions", async (req, res) => {
-  let reservedBalance = 0;
-  let reservationKey = null;
+  const client = await pool.connect();
+
+  let reservedCost = 0;
+  let apiKey = "";
+  let reservationCreated = false;
 
   try {
-    if (!DASHSCOPE_API_KEY) {
-      return res.status(500).json({
-        error: {
-          message:
-            "DASHSCOPE_API_KEY is not configured"
-        }
-      });
-    }
-
-    if (!DATABASE_URL) {
-      return res.status(500).json({
-        error: {
-          message:
-            "DATABASE_URL is not configured"
-        }
-      });
-    }
-
-    const apiKey = getApiKey(req);
+    apiKey = getCustomerKey(req);
 
     if (!apiKey) {
       return res.status(401).json({
         error: {
-          message: "Missing API key"
+          message: "API key is required"
         }
       });
     }
 
-    const {
-      messages,
-      model = "qwen3.5-27b",
-      temperature,
-      max_tokens
-    } = req.body;
+    const messages = req.body.messages;
 
-    if (!Array.isArray(messages)) {
+    if (!Array.isArray(messages) || messages.length === 0) {
       return res.status(400).json({
         error: {
-          message:
-            "messages must be an array"
+          message: "messages is required"
         }
       });
     }
 
-    if (messages.length === 0) {
+    const inputChars = JSON.stringify(messages).length;
+
+    if (inputChars > MAX_INPUT_CHARS) {
       return res.status(400).json({
         error: {
-          message:
-            "messages cannot be empty"
+          message: "Input is too large"
         }
       });
     }
 
-    const inputCharacters =
-      messages.reduce((total, message) => {
-        if (!message) return total;
+    const model = req.body.model || "qwen3.5-27b";
 
-        if (
-          typeof message.content === "string"
-        ) {
-          return total + message.content.length;
-        }
+    const maxTokens = Math.min(
+      Number(req.body.max_tokens || MAX_OUTPUT_TOKENS),
+      MAX_OUTPUT_TOKENS
+    );
 
-        if (
-          Array.isArray(message.content)
-        ) {
-          return (
-            total +
-            message.content.reduce(
-              (sum, item) => {
-                if (
-                  typeof item === "string"
-                ) {
-                  return sum + item.length;
-                }
+    /*
+      Estimate maximum possible cost.
 
-                if (
-                  item &&
-                  typeof item.text ===
-                    "string"
-                ) {
-                  return (
-                    sum +
-                    item.text.length
-                  );
-                }
-
-                return sum;
-              },
-              0
-            )
-          );
-        }
-
-        return total;
-      }, 0);
-
-    if (
-      inputCharacters >
-      MAX_INPUT_CHARS
-    ) {
-      return res.status(413).json({
-        error: {
-          message:
-            "Request is too large"
-        }
-      });
-    }
-
-    const safeMaxTokens =
-      Math.min(
-        Math.max(
-          Number(max_tokens) || 4096,
-          1
-        ),
-        MAX_OUTPUT_TOKENS
-      );
+      This is only a reservation.
+      It is NOT the final charge.
+    */
 
     const estimatedInputTokens =
-      Math.max(
-        estimateInputTokens(messages),
-        1
-      );
+      estimateInputTokens(messages);
 
-    const estimatedMaximumCost =
+    const maximumPossibleCost =
       calculateCost(
-        Math.ceil(
-          estimatedInputTokens * 1.25
-        ),
-        safeMaxTokens
+        estimatedInputTokens,
+        maxTokens
       );
 
-    const client =
-      await pool.connect();
+    if (
+      !Number.isFinite(maximumPossibleCost) ||
+      maximumPossibleCost <= 0
+    ) {
+      return res.status(400).json({
+        error: {
+          message: "Invalid request cost"
+        }
+      });
+    }
+
+    /*
+      IMPORTANT:
+
+      Reserve ONLY the estimated maximum cost.
+
+      NEVER set the customer's whole balance to zero.
+    */
+
+    await client.query("BEGIN");
+
+    const reservation = await client.query(
+      `
+      UPDATE api_keys
+      SET
+        balance = balance - $2,
+        updated_at = now()
+      WHERE
+        "key" = $1
+        AND active = true
+        AND balance >= $2
+      RETURNING
+        balance
+      `,
+      [
+        apiKey,
+        maximumPossibleCost
+      ]
+    );
+
+    if (reservation.rowCount === 0) {
+      await client.query("ROLLBACK");
+
+      return res.status(402).json({
+        error: {
+          message:
+            "Insufficient balance for this request"
+        }
+      });
+    }
+
+    reservedCost = maximumPossibleCost;
+    reservationCreated = true;
+
+    await client.query(
+      `
+      INSERT INTO balance_transactions
+        (api_key, amount, type, note)
+      VALUES
+        ($1, $2, 'reservation', $3)
+      `,
+      [
+        apiKey,
+        -maximumPossibleCost,
+        "Temporary reservation"
+      ]
+    );
+
+    await client.query("COMMIT");
+
+    /*
+      Call Alibaba Cloud only AFTER
+      the customer has enough balance reserved.
+    */
+
+    if (!DASHSCOPE_API_KEY) {
+      throw new Error(
+        "DASHSCOPE_API_KEY is not configured"
+      );
+    }
+
+    const upstreamResponse = await fetch(
+      "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization":
+            `Bearer ${DASHSCOPE_API_KEY}`
+        },
+        body: JSON.stringify({
+          ...req.body,
+          model
+        })
+      }
+    );
+
+    const upstreamText =
+      await upstreamResponse.text();
+
+    let upstreamData;
 
     try {
-      await client.query("BEGIN");
+      upstreamData = JSON.parse(upstreamText);
+    } catch {
+      upstreamData = null;
+    }
 
-      const reserveResult =
-        await client.query(
-          `UPDATE api_keys
-           SET balance = 0,
-               updated_at = now()
-           WHERE "key" = $1
-             AND active = true
-             AND balance >= $2
-           RETURNING balance + $2 AS original_balance`,
-          [
-            apiKey,
-            estimatedMaximumCost
-          ]
-        );
+    /*
+      Upstream failed.
+      Refund the reservation.
+    */
 
-      if (
-        reserveResult.rows.length === 0
-      ) {
-        await client.query(
-          "ROLLBACK"
-        );
-
-        return res.status(402).json({
-          error: {
-            message:
-              "Insufficient balance for this request"
-          }
-        });
-      }
-
-      const originalBalance =
-        Number(
-          reserveResult.rows[0]
-            .original_balance
-        );
-
-      reservedBalance =
-        originalBalance;
-
-      reservationKey = apiKey;
-
-      await client.query(
-        `INSERT INTO balance_transactions
-         (api_key, amount, type, note)
-         VALUES ($1, $2, $3, $4)`,
+    if (
+      !upstreamResponse.ok ||
+      !upstreamData
+    ) {
+      await pool.query(
+        `
+        UPDATE api_keys
+        SET
+          balance = balance + $2,
+          updated_at = now()
+        WHERE "key" = $1
+        `,
         [
           apiKey,
-          -reservedBalance,
-          "reservation",
-          "Temporary API request reservation"
+          reservedCost
         ]
       );
 
-      await client.query(
-        "COMMIT"
+      await pool.query(
+        `
+        INSERT INTO balance_transactions
+          (api_key, amount, type, note)
+        VALUES
+          ($1, $2, 'refund', $3)
+        `,
+        [
+          apiKey,
+          reservedCost,
+          "Upstream request failed"
+        ]
       );
 
-    } catch (error) {
-
-      await client.query(
-        "ROLLBACK"
-      );
-
-      throw error;
-
-    } finally {
-      client.release();
-    }
-
-    const upstreamBody = {
-      model,
-      messages,
-      max_tokens:
-        safeMaxTokens
-    };
-
-    if (
-      typeof temperature === "number"
-    ) {
-      upstreamBody.temperature =
-        temperature;
-    }
-
-    let response;
-
-    try {
-      response = await fetch(
-        "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
-        {
-          method: "POST",
-
-          headers: {
-            "Content-Type":
-              "application/json",
-
-            "Authorization":
-              `Bearer ${DASHSCOPE_API_KEY}`
-          },
-
-          body:
-            JSON.stringify(
-              upstreamBody
-            )
-        }
-      );
-
-    } catch (error) {
-
-      const refundClient =
-        await pool.connect();
-
-      try {
-        await refundClient.query(
-          "BEGIN"
-        );
-
-        await refundClient.query(
-          `UPDATE api_keys
-           SET balance = balance + $1,
-               updated_at = now()
-           WHERE "key" = $2`,
-          [
-            reservedBalance,
-            reservationKey
-          ]
-        );
-
-        await refundClient.query(
-          `INSERT INTO balance_transactions
-           (api_key, amount, type, note)
-           VALUES ($1, $2, $3, $4)`,
-          [
-            reservationKey,
-            reservedBalance,
-            "refund",
-            "Upstream request failed"
-          ]
-        );
-
-        await refundClient.query(
-          "COMMIT"
-        );
-
-      } catch (refundError) {
-
-        await refundClient.query(
-          "ROLLBACK"
-        );
-
-        console.error(
-          refundError
-        );
-
-      } finally {
-        refundClient.release();
-      }
-
-      return res.status(502).json({
+      return res.status(
+        upstreamResponse.status || 502
+      ).json({
         error: {
           message:
-            "Upstream API request failed"
+            "Upstream API request failed",
+          upstream:
+            upstreamData ||
+            upstreamText
         }
       });
     }
 
-    let data;
+    /*
+      Read actual token usage.
+    */
 
-    try {
-      data = await response.json();
-    } catch (error) {
-
-      const refundClient =
-        await pool.connect();
-
-      try {
-        await refundClient.query(
-          "BEGIN"
-        );
-
-        await refundClient.query(
-          `UPDATE api_keys
-           SET balance = balance + $1,
-               updated_at = now()
-           WHERE "key" = $2`,
-          [
-            reservedBalance,
-            reservationKey
-          ]
-        );
-
-        await refundClient.query(
-          `INSERT INTO balance_transactions
-           (api_key, amount, type, note)
-           VALUES ($1, $2, $3, $4)`,
-          [
-            reservationKey,
-            reservedBalance,
-            "refund",
-            "Invalid upstream response"
-          ]
-        );
-
-        await refundClient.query(
-          "COMMIT"
-        );
-
-      } catch (refundError) {
-
-        await refundClient.query(
-          "ROLLBACK"
-        );
-
-        console.error(
-          refundError
-        );
-
-      } finally {
-        refundClient.release();
-      }
-
-      return res.status(502).json({
-        error: {
-          message:
-            "Invalid upstream response"
-        }
-      });
-    }
-
-    if (!response.ok) {
-
-      const refundClient =
-        await pool.connect();
-
-      try {
-        await refundClient.query(
-          "BEGIN"
-        );
-
-        await refundClient.query(
-          `UPDATE api_keys
-           SET balance = balance + $1,
-               updated_at = now()
-           WHERE "key" = $2`,
-          [
-            reservedBalance,
-            reservationKey
-          ]
-        );
-
-        await refundClient.query(
-          `INSERT INTO balance_transactions
-           (api_key, amount, type, note)
-           VALUES ($1, $2, $3, $4)`,
-          [
-            reservationKey,
-            reservedBalance,
-            "refund",
-            "Upstream API returned an error"
-          ]
-        );
-
-        await refundClient.query(
-          "COMMIT"
-        );
-
-      } catch (refundError) {
-
-        await refundClient.query(
-          "ROLLBACK"
-        );
-
-        console.error(
-          refundError
-        );
-
-      } finally {
-        refundClient.release();
-      }
-
-      return res
-        .status(response.status)
-        .json(data);
-    }
+    const usage =
+      upstreamData.usage || {};
 
     const inputTokens =
       Number(
-        data?.usage?.prompt_tokens || 0
+        usage.prompt_tokens ||
+        usage.input_tokens ||
+        0
       );
 
     const outputTokens =
       Number(
-        data?.usage?.completion_tokens || 0
+        usage.completion_tokens ||
+        usage.output_tokens ||
+        0
       );
 
     const totalTokens =
       Number(
-        data?.usage?.total_tokens || 0
+        usage.total_tokens ||
+        inputTokens + outputTokens
       );
+
+    /*
+      Final real cost.
+    */
 
     const actualCost =
       calculateCost(
@@ -777,279 +649,276 @@ app.post("/v1/chat/completions", async (req, res) => {
         outputTokens
       );
 
-    if (
-      actualCost >
-      reservedBalance
-    ) {
+    /*
+      Safety check.
 
-      const refundClient =
-        await pool.connect();
+      Actual cost should never exceed
+      the reservation.
 
-      try {
-        await refundClient.query(
-          "BEGIN"
-        );
+      If it does, don't allow the customer's
+      balance to become negative.
+    */
 
-        await refundClient.query(
-          `INSERT INTO balance_transactions
-           (api_key, amount, type, note)
-           VALUES ($1, $2, $3, $4)`,
-          [
-            reservationKey,
-            0,
-            "usage",
-            "Request exceeded reserved amount"
-          ]
-        );
+    if (actualCost > reservedCost) {
+      await pool.query(
+        `
+        UPDATE api_keys
+        SET
+          balance = balance + $2,
+          updated_at = now()
+        WHERE "key" = $1
+        `,
+        [
+          apiKey,
+          reservedCost
+        ]
+      );
 
-        await refundClient.query(
-          "COMMIT"
-        );
-
-      } catch (logError) {
-
-        await refundClient.query(
-          "ROLLBACK"
-        );
-
-        console.error(
-          logError
-        );
-
-      } finally {
-        refundClient.release();
-      }
+      await pool.query(
+        `
+        INSERT INTO balance_transactions
+          (api_key, amount, type, note)
+        VALUES
+          ($1, $2, 'refund', $3)
+        `,
+        [
+          apiKey,
+          reservedCost,
+          "Safety refund: actual cost exceeded reservation"
+        ]
+      );
 
       return res.status(500).json({
         error: {
           message:
-            "Request exceeded the reserved billing amount"
+            "Billing safety check failed. Request was refunded."
         }
       });
     }
 
-    const refundAmount =
+    /*
+      Refund unused reservation.
+
+      Example:
+
+      Reserved = RM0.60
+      Actual   = RM0.06
+      Refund   = RM0.54
+    */
+
+    const refund =
       Number(
+        (reservedCost - actualCost)
+          .toFixed(6)
+      );
+
+    if (refund > 0) {
+      await pool.query(
+        `
+        UPDATE api_keys
+        SET
+          balance = balance + $2,
+          total_tokens = total_tokens + $3,
+          updated_at = now()
+        WHERE "key" = $1
+        `,
+        [
+          apiKey,
+          refund,
+          totalTokens
+        ]
+      );
+
+      await pool.query(
+        `
+        INSERT INTO balance_transactions
+          (api_key, amount, type, note)
+        VALUES
+          ($1, $2, 'refund', $3)
+        `,
+        [
+          apiKey,
+          refund,
+          "Unused request reservation"
+        ]
+      );
+    } else {
+      await pool.query(
+        `
+        UPDATE api_keys
+        SET
+          total_tokens = total_tokens + $2,
+          updated_at = now()
+        WHERE "key" = $1
+        `,
+        [
+          apiKey,
+          totalTokens
+        ]
+      );
+    }
+
+    /*
+      Record actual usage.
+    */
+
+    await pool.query(
+      `
+      INSERT INTO usage_logs
         (
-          reservedBalance -
-          actualCost
-        ).toFixed(6)
-      );
-
-    const finalClient =
-      await pool.connect();
-
-    try {
-      await finalClient.query(
-        "BEGIN"
-      );
-
-      if (refundAmount > 0) {
-        await finalClient.query(
-          `UPDATE api_keys
-           SET balance = balance + $1,
-               total_tokens =
-                 total_tokens + $2,
-               updated_at = now()
-           WHERE "key" = $3`,
-          [
-            refundAmount,
-            totalTokens,
-            reservationKey
-          ]
-        );
-
-        await finalClient.query(
-          `INSERT INTO balance_transactions
-           (api_key, amount, type, note)
-           VALUES ($1, $2, $3, $4)`,
-          [
-            reservationKey,
-            refundAmount,
-            "refund",
-            "Unused request reservation"
-          ]
-        );
-
-      } else {
-
-        await finalClient.query(
-          `UPDATE api_keys
-           SET total_tokens =
-                 total_tokens + $1,
-               updated_at = now()
-           WHERE "key" = $2`,
-          [
-            totalTokens,
-            reservationKey
-          ]
-        );
-      }
-
-      await finalClient.query(
-        `INSERT INTO usage_logs
-         (api_key, model,
+          api_key,
+          model,
           input_tokens,
           output_tokens,
-          cost)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [
-          reservationKey,
-          model,
-          inputTokens,
-          outputTokens,
-          actualCost
-        ]
-      );
+          cost
+        )
+      VALUES
+        ($1, $2, $3, $4, $5)
+      `,
+      [
+        apiKey,
+        model,
+        inputTokens,
+        outputTokens,
+        actualCost
+      ]
+    );
 
-      await finalClient.query(
-        `INSERT INTO balance_transactions
-         (api_key, amount, type, note)
-         VALUES ($1, $2, $3, $4)`,
+    /*
+      Record actual charge.
+
+      The actual charge is negative.
+    */
+
+    if (actualCost > 0) {
+      await pool.query(
+        `
+        INSERT INTO balance_transactions
+          (api_key, amount, type, note)
+        VALUES
+          ($1, $2, 'usage', $3)
+        `,
         [
-          reservationKey,
+          apiKey,
           -actualCost,
-          "usage",
-          `${model} API usage`
+          `Model usage: ${model}`
         ]
       );
-
-      const balanceResult =
-        await finalClient.query(
-          `SELECT balance
-           FROM api_keys
-           WHERE "key" = $1`,
-          [reservationKey]
-        );
-
-      await finalClient.query(
-        "COMMIT"
-      );
-
-      const remainingBalance =
-        Number(
-          balanceResult.rows[0]
-            .balance
-        );
-
-      data.billing = {
-        input_tokens:
-          inputTokens,
-
-        output_tokens:
-          outputTokens,
-
-        total_tokens:
-          totalTokens,
-
-        cost_rm:
-          actualCost,
-
-        remaining_balance_rm:
-          remainingBalance
-      };
-
-      reservedBalance = 0;
-      reservationKey = null;
-
-      return res.json(data);
-
-    } catch (error) {
-
-      await finalClient.query(
-        "ROLLBACK"
-      );
-
-      throw error;
-
-    } finally {
-      finalClient.release();
     }
 
-  } catch (error) {
+    /*
+      Get final balance.
+    */
 
-    console.error(error);
+    const finalBalance =
+      await pool.query(
+        `
+        SELECT
+          balance,
+          total_tokens
+        FROM api_keys
+        WHERE "key" = $1
+        `,
+        [apiKey]
+      );
 
-    if (
-      reservedBalance > 0 &&
-      reservationKey
-    ) {
-      try {
+    const remaining =
+      Number(
+        finalBalance.rows[0].balance
+      );
 
-        const refundClient =
-          await pool.connect();
+    /*
+      Return the original AI response
+      plus billing information.
+    */
 
-        try {
-          await refundClient.query(
-            "BEGIN"
-          );
+    res.json({
+      ...upstreamData,
 
-          await refundClient.query(
-            `UPDATE api_keys
-             SET balance = balance + $1,
-                 updated_at = now()
-             WHERE "key" = $2`,
-            [
-              reservedBalance,
-              reservationKey
-            ]
-          );
-
-          await refundClient.query(
-            `INSERT INTO balance_transactions
-             (api_key, amount,
-              type, note)
-             VALUES ($1, $2, $3, $4)`,
-            [
-              reservationKey,
-              reservedBalance,
-              "refund",
-              "Server error refund"
-            ]
-          );
-
-          await refundClient.query(
-            "COMMIT"
-          );
-
-        } catch (refundError) {
-
-          await refundClient.query(
-            "ROLLBACK"
-          );
-
-          console.error(
-            refundError
-          );
-
-        } finally {
-          refundClient.release();
-        }
-
-      } catch (refundConnectionError) {
-        console.error(
-          refundConnectionError
-        );
-      }
-    }
-
-    res.status(500).json({
-      error: {
-        message:
-          "Relay server error",
-        details:
-          error.message
+      billing: {
+        input_tokens: inputTokens,
+        output_tokens: outputTokens,
+        total_tokens: totalTokens,
+        cost: actualCost,
+        remaining: remaining
       }
     });
+  } catch (error) {
+    console.error(
+      "chat completion error:",
+      error
+    );
+
+    /*
+      If anything unexpected happens AFTER
+      reservation, refund the reservation.
+
+      This prevents the customer from losing
+      money when the upstream request fails.
+    */
+
+    if (
+      reservationCreated &&
+      reservedCost > 0 &&
+      apiKey
+    ) {
+      try {
+        await pool.query(
+          `
+          UPDATE api_keys
+          SET
+            balance = balance + $2,
+            updated_at = now()
+          WHERE "key" = $1
+          `,
+          [
+            apiKey,
+            reservedCost
+          ]
+        );
+
+        await pool.query(
+          `
+          INSERT INTO balance_transactions
+            (api_key, amount, type, note)
+          VALUES
+            ($1, $2, 'refund', $3)
+          `,
+          [
+            apiKey,
+            reservedCost,
+            "Automatic error refund"
+          ]
+        );
+      } catch (refundError) {
+        console.error(
+          "refund error:",
+          refundError
+        );
+      }
+    }
+
+    if (!res.headersSent) {
+      res.status(500).json({
+        error: {
+          message:
+            "Internal server error",
+          details:
+            error.message
+        }
+      });
+    }
+  } finally {
+    client.release();
   }
 });
 
-app.listen(
-  PORT,
-  "0.0.0.0",
-  () => {
-    console.log(
-      `Codex Relay running on port ${PORT}`
-    );
-  }
-);
+/* =========================
+   Start server
+========================= */
+
+app.listen(PORT, () => {
+  console.log(
+    `Codex Relay running on port ${PORT}`
+  );
+});
