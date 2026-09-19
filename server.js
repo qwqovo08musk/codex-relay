@@ -34,6 +34,9 @@ const pool = new Pool({
 const INPUT_PRICE_PER_1K = 0.02;
 const OUTPUT_PRICE_PER_1K = 0.15;
 
+const MAX_OUTPUT_TOKENS = 8192;
+const MAX_INPUT_CHARS = 500000;
+
 function calculateCost(inputTokens, outputTokens) {
   const inputCost =
     (inputTokens / 1000) * INPUT_PRICE_PER_1K;
@@ -44,6 +47,31 @@ function calculateCost(inputTokens, outputTokens) {
   return Number(
     (inputCost + outputCost).toFixed(6)
   );
+}
+
+function estimateInputTokens(messages) {
+  let characters = 0;
+
+  for (const message of messages) {
+    if (!message) continue;
+
+    if (typeof message.content === "string") {
+      characters += message.content.length;
+    } else if (Array.isArray(message.content)) {
+      for (const item of message.content) {
+        if (typeof item === "string") {
+          characters += item.length;
+        } else if (
+          item &&
+          typeof item.text === "string"
+        ) {
+          characters += item.text.length;
+        }
+      }
+    }
+  }
+
+  return Math.ceil(characters / 2);
 }
 
 function getApiKey(req) {
@@ -260,6 +288,14 @@ app.post("/admin/disable-key", async (req, res) => {
 
     const { api_key } = req.body;
 
+    if (!api_key) {
+      return res.status(400).json({
+        error: {
+          message: "API key is required"
+        }
+      });
+    }
+
     const result = await pool.query(
       `UPDATE api_keys
        SET active = false,
@@ -294,6 +330,9 @@ app.post("/admin/disable-key", async (req, res) => {
 });
 
 app.post("/v1/chat/completions", async (req, res) => {
+  let reservedBalance = 0;
+  let reservationKey = null;
+
   try {
     if (!DASHSCOPE_API_KEY) {
       return res.status(500).json({
@@ -323,45 +362,6 @@ app.post("/v1/chat/completions", async (req, res) => {
       });
     }
 
-    const keyResult = await pool.query(
-      `SELECT "key", balance, active
-       FROM api_keys
-       WHERE "key" = $1`,
-      [apiKey]
-    );
-
-    if (keyResult.rows.length === 0) {
-      return res.status(401).json({
-        error: {
-          message: "Invalid API key"
-        }
-      });
-    }
-
-    const keyData =
-      keyResult.rows[0];
-
-    if (!keyData.active) {
-      return res.status(403).json({
-        error: {
-          message:
-            "API key is disabled"
-        }
-      });
-    }
-
-    const balance =
-      Number(keyData.balance);
-
-    if (balance <= 0) {
-      return res.status(402).json({
-        error: {
-          message:
-            "Insufficient balance"
-        }
-      });
-    }
-
     const {
       messages,
       model = "qwen3.5-27b",
@@ -378,11 +378,168 @@ app.post("/v1/chat/completions", async (req, res) => {
       });
     }
 
+    if (messages.length === 0) {
+      return res.status(400).json({
+        error: {
+          message:
+            "messages cannot be empty"
+        }
+      });
+    }
+
+    const inputCharacters =
+      messages.reduce((total, message) => {
+        if (!message) return total;
+
+        if (
+          typeof message.content === "string"
+        ) {
+          return total + message.content.length;
+        }
+
+        if (
+          Array.isArray(message.content)
+        ) {
+          return (
+            total +
+            message.content.reduce(
+              (sum, item) => {
+                if (
+                  typeof item === "string"
+                ) {
+                  return sum + item.length;
+                }
+
+                if (
+                  item &&
+                  typeof item.text ===
+                    "string"
+                ) {
+                  return (
+                    sum +
+                    item.text.length
+                  );
+                }
+
+                return sum;
+              },
+              0
+            )
+          );
+        }
+
+        return total;
+      }, 0);
+
+    if (
+      inputCharacters >
+      MAX_INPUT_CHARS
+    ) {
+      return res.status(413).json({
+        error: {
+          message:
+            "Request is too large"
+        }
+      });
+    }
+
     const safeMaxTokens =
       Math.min(
-        Number(max_tokens) || 4096,
-        8192
+        Math.max(
+          Number(max_tokens) || 4096,
+          1
+        ),
+        MAX_OUTPUT_TOKENS
       );
+
+    const estimatedInputTokens =
+      Math.max(
+        estimateInputTokens(messages),
+        1
+      );
+
+    const estimatedMaximumCost =
+      calculateCost(
+        Math.ceil(
+          estimatedInputTokens * 1.25
+        ),
+        safeMaxTokens
+      );
+
+    const client =
+      await pool.connect();
+
+    try {
+      await client.query("BEGIN");
+
+      const reserveResult =
+        await client.query(
+          `UPDATE api_keys
+           SET balance = 0,
+               updated_at = now()
+           WHERE "key" = $1
+             AND active = true
+             AND balance >= $2
+           RETURNING balance + $2 AS original_balance`,
+          [
+            apiKey,
+            estimatedMaximumCost
+          ]
+        );
+
+      if (
+        reserveResult.rows.length === 0
+      ) {
+        await client.query(
+          "ROLLBACK"
+        );
+
+        return res.status(402).json({
+          error: {
+            message:
+              "Insufficient balance for this request"
+          }
+        });
+      }
+
+      const originalBalance =
+        Number(
+          reserveResult.rows[0]
+            .original_balance
+        );
+
+      reservedBalance =
+        originalBalance;
+
+      reservationKey = apiKey;
+
+      await client.query(
+        `INSERT INTO balance_transactions
+         (api_key, amount, type, note)
+         VALUES ($1, $2, $3, $4)`,
+        [
+          apiKey,
+          -reservedBalance,
+          "reservation",
+          "Temporary API request reservation"
+        ]
+      );
+
+      await client.query(
+        "COMMIT"
+      );
+
+    } catch (error) {
+
+      await client.query(
+        "ROLLBACK"
+      );
+
+      throw error;
+
+    } finally {
+      client.release();
+    }
 
     const upstreamBody = {
       model,
@@ -398,8 +555,10 @@ app.post("/v1/chat/completions", async (req, res) => {
         temperature;
     }
 
-    const response =
-      await fetch(
+    let response;
+
+    try {
+      response = await fetch(
         "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
         {
           method: "POST",
@@ -419,10 +578,179 @@ app.post("/v1/chat/completions", async (req, res) => {
         }
       );
 
-    const data =
-      await response.json();
+    } catch (error) {
+
+      const refundClient =
+        await pool.connect();
+
+      try {
+        await refundClient.query(
+          "BEGIN"
+        );
+
+        await refundClient.query(
+          `UPDATE api_keys
+           SET balance = balance + $1,
+               updated_at = now()
+           WHERE "key" = $2`,
+          [
+            reservedBalance,
+            reservationKey
+          ]
+        );
+
+        await refundClient.query(
+          `INSERT INTO balance_transactions
+           (api_key, amount, type, note)
+           VALUES ($1, $2, $3, $4)`,
+          [
+            reservationKey,
+            reservedBalance,
+            "refund",
+            "Upstream request failed"
+          ]
+        );
+
+        await refundClient.query(
+          "COMMIT"
+        );
+
+      } catch (refundError) {
+
+        await refundClient.query(
+          "ROLLBACK"
+        );
+
+        console.error(
+          refundError
+        );
+
+      } finally {
+        refundClient.release();
+      }
+
+      return res.status(502).json({
+        error: {
+          message:
+            "Upstream API request failed"
+        }
+      });
+    }
+
+    let data;
+
+    try {
+      data = await response.json();
+    } catch (error) {
+
+      const refundClient =
+        await pool.connect();
+
+      try {
+        await refundClient.query(
+          "BEGIN"
+        );
+
+        await refundClient.query(
+          `UPDATE api_keys
+           SET balance = balance + $1,
+               updated_at = now()
+           WHERE "key" = $2`,
+          [
+            reservedBalance,
+            reservationKey
+          ]
+        );
+
+        await refundClient.query(
+          `INSERT INTO balance_transactions
+           (api_key, amount, type, note)
+           VALUES ($1, $2, $3, $4)`,
+          [
+            reservationKey,
+            reservedBalance,
+            "refund",
+            "Invalid upstream response"
+          ]
+        );
+
+        await refundClient.query(
+          "COMMIT"
+        );
+
+      } catch (refundError) {
+
+        await refundClient.query(
+          "ROLLBACK"
+        );
+
+        console.error(
+          refundError
+        );
+
+      } finally {
+        refundClient.release();
+      }
+
+      return res.status(502).json({
+        error: {
+          message:
+            "Invalid upstream response"
+        }
+      });
+    }
 
     if (!response.ok) {
+
+      const refundClient =
+        await pool.connect();
+
+      try {
+        await refundClient.query(
+          "BEGIN"
+        );
+
+        await refundClient.query(
+          `UPDATE api_keys
+           SET balance = balance + $1,
+               updated_at = now()
+           WHERE "key" = $2`,
+          [
+            reservedBalance,
+            reservationKey
+          ]
+        );
+
+        await refundClient.query(
+          `INSERT INTO balance_transactions
+           (api_key, amount, type, note)
+           VALUES ($1, $2, $3, $4)`,
+          [
+            reservationKey,
+            reservedBalance,
+            "refund",
+            "Upstream API returned an error"
+          ]
+        );
+
+        await refundClient.query(
+          "COMMIT"
+        );
+
+      } catch (refundError) {
+
+        await refundClient.query(
+          "ROLLBACK"
+        );
+
+        console.error(
+          refundError
+        );
+
+      } finally {
+        refundClient.release();
+      }
+
       return res
         .status(response.status)
         .json(data);
@@ -443,59 +771,122 @@ app.post("/v1/chat/completions", async (req, res) => {
         data?.usage?.total_tokens || 0
       );
 
-    const cost =
+    const actualCost =
       calculateCost(
         inputTokens,
         outputTokens
       );
 
-    const client =
-      await pool.connect();
+    if (
+      actualCost >
+      reservedBalance
+    ) {
 
-    try {
-      await client.query("BEGIN");
+      const refundClient =
+        await pool.connect();
 
-      const deductResult =
-        await client.query(
-          `UPDATE api_keys
-           SET balance = balance - $1,
-               total_tokens =
-                 total_tokens + $2,
-               updated_at = now()
-           WHERE "key" = $3
-             AND active = true
-             AND balance >= $1
-           RETURNING balance`,
+      try {
+        await refundClient.query(
+          "BEGIN"
+        );
+
+        await refundClient.query(
+          `INSERT INTO balance_transactions
+           (api_key, amount, type, note)
+           VALUES ($1, $2, $3, $4)`,
           [
-            cost,
-            totalTokens,
-            apiKey
+            reservationKey,
+            0,
+            "usage",
+            "Request exceeded reserved amount"
           ]
         );
 
-      if (
-        deductResult.rows.length === 0
-      ) {
-        await client.query(
+        await refundClient.query(
+          "COMMIT"
+        );
+
+      } catch (logError) {
+
+        await refundClient.query(
           "ROLLBACK"
         );
 
-        return res.status(402).json({
-          error: {
-            message:
-              "Insufficient balance for this request"
-          }
-        });
-      }
-
-      const newBalance =
-        Number(
-          deductResult
-            .rows[0]
-            .balance
+        console.error(
+          logError
         );
 
-      await client.query(
+      } finally {
+        refundClient.release();
+      }
+
+      return res.status(500).json({
+        error: {
+          message:
+            "Request exceeded the reserved billing amount"
+        }
+      });
+    }
+
+    const refundAmount =
+      Number(
+        (
+          reservedBalance -
+          actualCost
+        ).toFixed(6)
+      );
+
+    const finalClient =
+      await pool.connect();
+
+    try {
+      await finalClient.query(
+        "BEGIN"
+      );
+
+      if (refundAmount > 0) {
+        await finalClient.query(
+          `UPDATE api_keys
+           SET balance = balance + $1,
+               total_tokens =
+                 total_tokens + $2,
+               updated_at = now()
+           WHERE "key" = $3`,
+          [
+            refundAmount,
+            totalTokens,
+            reservationKey
+          ]
+        );
+
+        await finalClient.query(
+          `INSERT INTO balance_transactions
+           (api_key, amount, type, note)
+           VALUES ($1, $2, $3, $4)`,
+          [
+            reservationKey,
+            refundAmount,
+            "refund",
+            "Unused request reservation"
+          ]
+        );
+
+      } else {
+
+        await finalClient.query(
+          `UPDATE api_keys
+           SET total_tokens =
+                 total_tokens + $1,
+               updated_at = now()
+           WHERE "key" = $2`,
+          [
+            totalTokens,
+            reservationKey
+          ]
+        );
+      }
+
+      await finalClient.query(
         `INSERT INTO usage_logs
          (api_key, model,
           input_tokens,
@@ -503,30 +894,43 @@ app.post("/v1/chat/completions", async (req, res) => {
           cost)
          VALUES ($1, $2, $3, $4, $5)`,
         [
-          apiKey,
+          reservationKey,
           model,
           inputTokens,
           outputTokens,
-          cost
+          actualCost
         ]
       );
 
-      await client.query(
+      await finalClient.query(
         `INSERT INTO balance_transactions
-         (api_key, amount,
-          type, note)
+         (api_key, amount, type, note)
          VALUES ($1, $2, $3, $4)`,
         [
-          apiKey,
-          -cost,
+          reservationKey,
+          -actualCost,
           "usage",
           `${model} API usage`
         ]
       );
 
-      await client.query(
+      const balanceResult =
+        await finalClient.query(
+          `SELECT balance
+           FROM api_keys
+           WHERE "key" = $1`,
+          [reservationKey]
+        );
+
+      await finalClient.query(
         "COMMIT"
       );
+
+      const remainingBalance =
+        Number(
+          balanceResult.rows[0]
+            .balance
+        );
 
       data.billing = {
         input_tokens:
@@ -539,35 +943,100 @@ app.post("/v1/chat/completions", async (req, res) => {
           totalTokens,
 
         cost_rm:
-          cost,
+          actualCost,
 
         remaining_balance_rm:
-          newBalance
+          remainingBalance
       };
 
-      res.json(data);
+      reservedBalance = 0;
+      reservationKey = null;
+
+      return res.json(data);
 
     } catch (error) {
 
-      await client.query(
+      await finalClient.query(
         "ROLLBACK"
       );
 
       throw error;
 
     } finally {
-      client.release();
+      finalClient.release();
     }
 
   } catch (error) {
 
     console.error(error);
 
+    if (
+      reservedBalance > 0 &&
+      reservationKey
+    ) {
+      try {
+
+        const refundClient =
+          await pool.connect();
+
+        try {
+          await refundClient.query(
+            "BEGIN"
+          );
+
+          await refundClient.query(
+            `UPDATE api_keys
+             SET balance = balance + $1,
+                 updated_at = now()
+             WHERE "key" = $2`,
+            [
+              reservedBalance,
+              reservationKey
+            ]
+          );
+
+          await refundClient.query(
+            `INSERT INTO balance_transactions
+             (api_key, amount,
+              type, note)
+             VALUES ($1, $2, $3, $4)`,
+            [
+              reservationKey,
+              reservedBalance,
+              "refund",
+              "Server error refund"
+            ]
+          );
+
+          await refundClient.query(
+            "COMMIT"
+          );
+
+        } catch (refundError) {
+
+          await refundClient.query(
+            "ROLLBACK"
+          );
+
+          console.error(
+            refundError
+          );
+
+        } finally {
+          refundClient.release();
+        }
+
+      } catch (refundConnectionError) {
+        console.error(
+          refundConnectionError
+        );
+      }
+    }
+
     res.status(500).json({
       error: {
         message:
           "Relay server error",
-
         details:
           error.message
       }
