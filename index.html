@@ -1,218 +1,170 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Codex Relay</title>
-
-  <style>
-    * {
-      box-sizing: border-box;
-    }
-
-    body {
-      margin: 0;
-      font-family: Arial, sans-serif;
-      background: #f5f5f5;
-      color: #111;
-    }
-
-    .app {
-      max-width: 900px;
-      margin: auto;
-      min-height: 100vh;
-      display: flex;
-      flex-direction: column;
-      background: white;
-    }
-
-    header {
-      padding: 18px 20px;
-      border-bottom: 1px solid #ddd;
-      font-size: 20px;
-      font-weight: bold;
-    }
-
-    #chat {
-      flex: 1;
-      padding: 20px;
-      overflow-y: auto;
-    }
-
-    .message {
-      margin-bottom: 16px;
-      padding: 12px 15px;
-      border-radius: 12px;
-      max-width: 85%;
-      white-space: pre-wrap;
-      line-height: 1.5;
-    }
-
-    .user {
-      margin-left: auto;
-      background: #e9e9e9;
-    }
-
-    .assistant {
-      margin-right: auto;
-      background: #f7f7f7;
-      border: 1px solid #eee;
-    }
-
-    .input-area {
-      display: flex;
-      gap: 10px;
-      padding: 15px;
-      border-top: 1px solid #ddd;
-    }
-
-    textarea {
-      flex: 1;
-      resize: none;
-      min-height: 50px;
-      padding: 13px;
-      border: 1px solid #ccc;
-      border-radius: 10px;
-      font-size: 16px;
-      outline: none;
-    }
-
-    button {
-      padding: 0 20px;
-      border: none;
-      border-radius: 10px;
-      background: #111;
-      color: white;
-      font-size: 16px;
-      cursor: pointer;
-    }
-
-    button:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-    }
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Codex Relay</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:Arial,sans-serif;background:#f5f5f5;color:#111}
+.app{max-width:1000px;margin:auto;min-height:100vh;background:#fff}
+header{padding:20px;border-bottom:1px solid #ddd;font-size:22px;font-weight:bold}
+nav{display:flex;border-bottom:1px solid #ddd}
+nav button{flex:1;padding:15px;border:0;background:white;color:#111}
+nav button.active{background:#111;color:white}
+section{padding:20px}
+.hidden{display:none}
+.card{border:1px solid #ddd;border-radius:12px;padding:18px;margin-bottom:15px}
+input,textarea,select{width:100%;padding:12px;border:1px solid #ccc;border-radius:8px;margin:7px 0 12px;font-size:15px}
+button{padding:11px 16px;border:0;border-radius:8px;background:#111;color:white;cursor:pointer}
+button:disabled{opacity:.5}
+.key{font-family:monospace;background:#f3f3f3;padding:10px;border-radius:8px;word-break:break-all}
+table{width:100%;border-collapse:collapse}
+th,td{text-align:left;padding:10px;border-bottom:1px solid #ddd}
+.chatbox{min-height:400px}
+.message{padding:12px 15px;margin:10px 0;border-radius:10px;white-space:pre-wrap}
+.user{background:#eee;margin-left:15%}
+.assistant{background:#f7f7f7;margin-right:15%}
+.row{display:flex;gap:10px}
+.row>*{flex:1}
+</style>
 </head>
 
 <body>
-
 <div class="app">
 
-  <header>
-    Codex Relay
-  </header>
+<header>Codex Relay</header>
 
-  <div id="chat">
-    <div class="message assistant">
-      Hello! Ask me anything.
-    </div>
-  </div>
+<nav>
+<button id="chatTab" class="active" onclick="showPage('chat')">Chat</button>
+<button onclick="showPage('admin')">Admin</button>
+</nav>
 
-  <div class="input-area">
-    <textarea
-      id="input"
-      placeholder="Type your message..."
-    ></textarea>
+<section id="chat">
+<div class="card">
+<label>API Key</label>
+<input id="apiKey" placeholder="cr_...">
+</div>
 
-    <button id="send">
-      Send
-    </button>
-  </div>
+<div id="chatbox" class="chatbox">
+<div class="message assistant">Hello! Ask me anything.</div>
+</div>
+
+<div class="row">
+<textarea id="message" placeholder="Type your message..."></textarea>
+<button onclick="sendMessage()">Send</button>
+</div>
+</section>
+
+<section id="admin" class="hidden">
+
+<div class="card">
+<h2>Create API Key</h2>
+<p>Create a new customer API key.</p>
+<button onclick="createKey()">Create Key</button>
+<div id="newKey"></div>
+</div>
+
+<div class="card">
+<h2>Customer API Key</h2>
+
+<label>API Key</label>
+<input id="lookupKey" placeholder="cr_...">
+
+<label>Add Balance</label>
+<input id="balance" type="number" placeholder="10">
+
+<button onclick="addBalance()">Add Balance</button>
+
+<div id="adminResult"></div>
+</div>
+
+</section>
 
 </div>
 
 <script>
-const API_URL = "https://codex-relay.onrender.com/v1/chat/completions";
+const API="https://codex-relay.onrender.com";
 
-const chat = document.getElementById("chat");
-const input = document.getElementById("input");
-const send = document.getElementById("send");
-
-const messages = [];
-
-function addMessage(role, content) {
-  const div = document.createElement("div");
-
-  div.className = "message " + role;
-  div.textContent = content;
-
-  chat.appendChild(div);
-  chat.scrollTop = chat.scrollHeight;
-
-  return div;
+function showPage(page){
+document.getElementById("chat").classList.toggle("hidden",page!=="chat");
+document.getElementById("admin").classList.toggle("hidden",page!=="admin");
 }
 
-async function sendMessage() {
-  const text = input.value.trim();
+async function createKey(){
+try{
+const r=await fetch(API+"/admin/create-key",{method:"POST"});
+const d=await r.json();
 
-  if (!text || send.disabled) {
-    return;
-  }
+if(!r.ok) throw new Error(d?.error?.message||"Failed");
 
-  input.value = "";
-  send.disabled = true;
+document.getElementById("newKey").innerHTML=
+"<p>New API Key:</p><div class='key'>"+d.api_key+"</div>";
 
-  addMessage("user", text);
-
-  messages.push({
-    role: "user",
-    content: text
-  });
-
-  const thinking = addMessage("assistant", "Thinking...");
-
-  try {
-    const response = await fetch(API_URL, {
-      method: "POST",
-
-      headers: {
-        "Content-Type": "application/json"
-      },
-
-      body: JSON.stringify({
-        model: "qwen3.5-27b",
-        messages: messages
-      })
-    });
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      throw new Error(
-        data?.error?.message || "API request failed"
-      );
-    }
-
-    const answer =
-      data?.choices?.[0]?.message?.content ||
-      "No response received.";
-
-    thinking.textContent = answer;
-
-    messages.push({
-      role: "assistant",
-      content: answer
-    });
-
-  } catch (error) {
-
-    thinking.textContent =
-      "Error: " + error.message;
-
-  } finally {
-    send.disabled = false;
-    input.focus();
-  }
+}catch(e){
+document.getElementById("newKey").textContent="Error: "+e.message;
+}
 }
 
-send.addEventListener("click", sendMessage);
+async function addBalance(){
+const key=document.getElementById("lookupKey").value.trim();
+const amount=Number(document.getElementById("balance").value);
 
-input.addEventListener("keydown", function(event) {
-  if (event.key === "Enter" && !event.shiftKey) {
-    event.preventDefault();
-    sendMessage();
-  }
+if(!key||!amount){
+document.getElementById("adminResult").textContent="Enter API key and amount.";
+return;
+}
+
+document.getElementById("adminResult").textContent=
+"Balance system will be enabled after the backend billing update.";
+}
+
+async function sendMessage(){
+
+const text=document.getElementById("message").value.trim();
+const key=document.getElementById("apiKey").value.trim();
+
+if(!text||!key)return;
+
+document.getElementById("message").value="";
+
+const box=document.getElementById("chatbox");
+
+const user=document.createElement("div");
+user.className="message user";
+user.textContent=text;
+box.appendChild(user);
+
+const thinking=document.createElement("div");
+thinking.className="message assistant";
+thinking.textContent="Thinking...";
+box.appendChild(thinking);
+
+try{
+
+const r=await fetch(API+"/v1/chat/completions",{
+method:"POST",
+headers:{
+"Content-Type":"application/json",
+"Authorization":"Bearer "+key
+},
+body:JSON.stringify({
+model:"qwen3.5-27b",
+messages:[{role:"user",content:text}]
+})
 });
+
+const d=await r.json();
+
+if(!r.ok)throw new Error(d?.error?.message||"API request failed");
+
+thinking.textContent=
+d?.choices?.[0]?.message?.content||"No response.";
+
+}catch(e){
+thinking.textContent="Error: "+e.message;
+}
+}
 </script>
 
 </body>
